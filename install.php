@@ -39,6 +39,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 setting_key VARCHAR(255) PRIMARY KEY,
                 setting_value TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS clients (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                company_name VARCHAR(255) NOT NULL,
+                contact_person VARCHAR(255),
+                email VARCHAR(255),
+                address TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS projects (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                client_id INT,
+                title VARCHAR(255) NOT NULL,
+                risk_factor DECIMAL(5,2) DEFAULT 1.0,
+                status ENUM('draft', 'sent', 'approved', 'rejected', 'changes_requested') DEFAULT 'draft',
+                public_token VARCHAR(64) UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS project_items (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                project_id INT,
+                position_order INT,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                hours_estimated DECIMAL(8,2),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS item_uploads (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                item_id INT,
+                uploader_type ENUM('admin', 'client') DEFAULT 'admin',
+                file_path VARCHAR(255) NOT NULL,
+                original_name VARCHAR(255),
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (item_id) REFERENCES project_items(id) ON DELETE CASCADE
+            );
             
             INSERT IGNORE INTO settings (setting_key, setting_value) VALUES 
             ('smtp_host', ''), ('smtp_user', ''), ('smtp_pass', ''), ('smtp_port', '587'), 
@@ -57,6 +100,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute();
 
         // Config Datei schreiben
+        if (!is_dir('config')) {
+            mkdir('config', 0755, true);
+        }
         $config_content = "<?php
 define('DB_HOST', '$db_host');
 define('DB_NAME', '$db_name');

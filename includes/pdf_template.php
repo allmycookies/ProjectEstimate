@@ -1,11 +1,10 @@
 <?php
 // includes/pdf_template.php
-// Variablen $project, $client, $items, $totalHours, $bufferHours, $grandTotal müssen vorher definiert sein.
+// Variablen $project, $client, $items, $totalHours, $bufferHours, $grandTotal, $logo_path_absolute müssen vorher definiert sein.
 
-// Logo Pfad für DomPDF (braucht absoluten Server-Pfad)
-$logoPath = $_SERVER['DOCUMENT_ROOT'] . '/assets/img/logo.png'; 
-// Falls kein Logo da ist, Dummy nutzen oder ausblenden
-$logoTag = file_exists($logoPath) ? '<img src="'.$logoPath.'" style="height: 50px;">' : '<h2>'.APP_NAME.'</h2>';
+$logoTag = file_exists($logo_path_absolute)
+    ? '<img src="'.$logo_path_absolute.'" style="height: 50px;">'
+    : '<h2>'.APP_NAME.'</h2>';
 ?>
 <!DOCTYPE html>
 <html>

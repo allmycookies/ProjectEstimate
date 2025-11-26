@@ -8,8 +8,8 @@ $token = $_GET['token'] ?? '';
 
 // Projekt laden via Token
 $stmt = $conn->prepare("
-    SELECT p.*, c.company_name, u.full_name as manager_name 
-    FROM projects p 
+    SELECT p.*, c.company_name, u.full_name as manager_name
+    FROM projects p
     JOIN clients c ON p.client_id = c.id
     JOIN users u ON p.user_id = u.id
     WHERE p.public_token = ? LIMIT 1
@@ -23,7 +23,12 @@ if (!$project) {
 }
 
 // Items laden
-$stmtItems = $conn->prepare("SELECT * FROM project_items WHERE project_id = ? ORDER BY position_order ASC");
+$stmtItems = $conn->prepare("SELECT pi.*, GROUP_CONCAT(iu.original_name SEPARATOR ', ') as uploaded_files
+                             FROM project_items pi
+                             LEFT JOIN item_uploads iu ON pi.id = iu.item_id
+                             WHERE pi.project_id = ?
+                             GROUP BY pi.id
+                             ORDER BY pi.position_order ASC");
 $stmtItems->bind_param("i", $project['id']);
 $stmtItems->execute();
 $items = $stmtItems->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -48,6 +53,8 @@ $grandTotal = $totalHours * $project['risk_factor'];
         .project-sheet { background: white; max-width: 900px; margin: 30px auto; padding: 40px; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
         .action-bar { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid #ddd; padding: 15px; text-align: center; box-shadow: 0 -5px 10px rgba(0,0,0,0.05); z-index: 1000; }
         .status-badge { font-size: 0.9rem; padding: 5px 10px; border-radius: 4px; }
+        .drop-zone { border: 2px dashed #ccc; border-radius: 5px; padding: 10px; transition: all 0.3s ease; }
+        .drop-zone.drag-over { border-color: #0d6efd; background-color: #e9f5ff; }
     </style>
 </head>
 <body class="pb-5">
@@ -62,7 +69,7 @@ $grandTotal = $totalHours * $project['risk_factor'];
                 <h5 class="text-muted text-uppercase small">Erstellt von</h5>
                 <p class="mb-0 fw-bold"><?= htmlspecialchars($project['manager_name']) ?></p>
                 <p class="text-muted small"><?= date('d.m.Y', strtotime($project['created_at'])) ?></p>
-                
+
                 <?php if($project['status'] == 'approved'): ?>
                     <span class="badge bg-success mt-2">GENEHMIGT</span>
                 <?php endif; ?>
@@ -82,14 +89,20 @@ $grandTotal = $totalHours * $project['risk_factor'];
             </thead>
             <tbody>
                 <?php foreach($items as $idx => $item): ?>
-                <tr>
+                <tr id="item-row-<?= $item['id'] ?>" class="drop-zone" data-item-id="<?= $item['id'] ?>">
                     <td><?= $idx + 1 ?></td>
                     <td class="fw-bold">
                         <?= htmlspecialchars($item['title']) ?>
                         <div class="mt-2">
-                             <button class="btn btn-link btn-sm p-0 text-decoration-none text-muted small" onclick="alert('Upload Funktion folgt in Kürze')">
+                            <input type="file" id="file-upload-<?= $item['id'] ?>" class="d-none" onchange="handleFileSelect(event, <?= $item['id'] ?>)">
+                            <label for="file-upload-<?= $item['id'] ?>" class="btn btn-link btn-sm p-0 text-decoration-none text-muted small" style="cursor: pointer;">
                                 <i class="bi bi-paperclip"></i> Datei anhängen
-                             </button>
+                            </label>
+                            <div class="upload-status" id="upload-status-<?= $item['id'] ?>">
+                                <?php if($item['uploaded_files']): ?>
+                                    <span class="text-muted small"><i class="bi bi-check-circle"></i> Bereits hochgeladen: <?= htmlspecialchars($item['uploaded_files']) ?></span>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </td>
                     <td class="text-muted small"><?= nl2br(htmlspecialchars($item['description'])) ?></td>
@@ -112,9 +125,9 @@ $grandTotal = $totalHours * $project['risk_factor'];
                 </tr>
             </tfoot>
         </table>
-        
+
         <div class="alert alert-info mt-5 small">
-            <i class="bi bi-info-circle"></i> Diese Aufwandschätzung basiert auf den aktuellen Anforderungen. 
+            <i class="bi bi-info-circle"></i> Diese Aufwandschätzung basiert auf den aktuellen Anforderungen.
             Durch Klicken auf "Genehmigen" akzeptieren Sie den Ablaufplan.
         </div>
     </div>
@@ -133,11 +146,62 @@ $grandTotal = $totalHours * $project['risk_factor'];
     <?php endif; ?>
 
     <script>
-        // Kleines Inline JS für die Buttons
-        function updateStatus(newStatus) {
-            const token = "<?= $token ?>";
-            if(!confirm("Sind Sie sicher?")) return;
+        const token = "<?= $token ?>";
 
+        document.querySelectorAll('.drop-zone').forEach(zone => {
+            zone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                zone.classList.add('drag-over');
+            });
+            zone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                zone.classList.remove('drag-over');
+            });
+            zone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                zone.classList.remove('drag-over');
+                const itemId = zone.dataset.itemId;
+                if (e.dataTransfer.files.length > 0) {
+                    uploadFile(e.dataTransfer.files[0], itemId);
+                }
+            });
+        });
+
+        function handleFileSelect(event, itemId) {
+            if (event.target.files.length > 0) {
+                uploadFile(event.target.files[0], itemId);
+            }
+        }
+
+        function uploadFile(file, itemId) {
+            const statusDiv = document.getElementById('upload-status-' + itemId);
+            statusDiv.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Lade hoch...';
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('token', token);
+            formData.append('item_id', itemId);
+
+            fetch('modules/upload/handle.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    statusDiv.innerHTML = `<span class="text-success small"><i class="bi bi-check-circle"></i> ${result.original_name} hochgeladen. Seite wird neu geladen...</span>`;
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    statusDiv.innerHTML = `<span class="text-danger small">Fehler: ${result.error}</span>`;
+                }
+            })
+            .catch(error => {
+                statusDiv.innerHTML = `<span class="text-danger small">Netzwerkfehler.</span>`;
+            });
+        }
+
+        function updateStatus(newStatus) {
+            if(!confirm("Sind Sie sicher?")) return;
             fetch('modules/client/action.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

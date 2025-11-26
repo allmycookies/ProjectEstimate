@@ -34,23 +34,26 @@ $conn->begin_transaction();
 
 try {
     $projectId = $proj['id'] ?? null;
-    $token = null; // Token wird hier initialisiert und je nach Fall korrekt zugewiesen
+    $token = null;
 
     if ($projectId) {
         // UPDATE
         $stmt = $conn->prepare("UPDATE projects SET client_id=?, title=?, risk_factor=?, status=? WHERE id=? AND user_id=?");
         $stmt->bind_param("isdsii", $proj['client_id'], $proj['title'], $proj['risk_factor'], $proj['status'], $projectId, $userId);
         $stmt->execute();
-        
-        // Bei einem Update den existierenden Token aus der Datenbank laden
-        $tRes = $conn->query("SELECT public_token FROM projects WHERE id = $projectId");
-        $token = $tRes->fetch_assoc()['public_token'] ?? null;
 
-        // Items: Einfachheitshalber löschen wir alle alten und schreiben neu (bei komplexen Systemen macht man Diffing)
-        $conn->query("DELETE FROM project_items WHERE project_id = $projectId");
+        // Token für Mail-Versand holen
+        $stmtToken = $conn->prepare("SELECT public_token FROM projects WHERE id = ?");
+        $stmtToken->bind_param("i", $projectId);
+        $stmtToken->execute();
+        $token = $stmtToken->get_result()->fetch_assoc()['public_token'] ?? null;
+
+        // Alte Items löschen
+        $stmtDelete = $conn->prepare("DELETE FROM project_items WHERE project_id = ?");
+        $stmtDelete->bind_param("i", $projectId);
+        $stmtDelete->execute();
     } else {
         // INSERT
-        // Bei einem neuen Projekt einen neuen Token generieren
         $token = bin2hex(random_bytes(32));
         $stmt = $conn->prepare("INSERT INTO projects (user_id, client_id, title, risk_factor, status, public_token) VALUES (?, ?, ?, ?, ?, ?)");
         $stmt->bind_param("iissss", $userId, $proj['client_id'], $proj['title'], $proj['risk_factor'], $proj['status'], $token);
@@ -58,27 +61,22 @@ try {
         $projectId = $conn->insert_id;
     }
 
-    // START UPDATE: Mail Versand wenn Status "sent"
-    if ($proj['status'] === 'sent') {
+    // Mail versenden, wenn Status 'sent' ist
+    if ($proj['status'] === 'sent' && $token) {
         // Kundendaten holen
-        $cRes = $conn->query("SELECT * FROM clients WHERE id = " . intval($proj['client_id']));
-        $client = $cRes->fetch_assoc();
+        $stmtClient = $conn->prepare("SELECT email, contact_person FROM clients WHERE id = ?");
+        $stmtClient->bind_param("i", $proj['client_id']);
+        $stmtClient->execute();
+        $client = $stmtClient->get_result()->fetch_assoc();
         
-        if ($client && $client['email']) {
+        if ($client && !empty($client['email'])) {
             require_once '../../includes/mailer.php';
             
-            $link = BASE_URL . "index.php?module=client&page=view&token=" . $token; // $token muss oben definiert sein (bei UPDATE evtl. neu laden)
-            // Hinweis: Bei UPDATE muss der Token aus der DB geholt werden, wenn er nicht neu erstellt wurde:
-            if(!isset($token)) { // Diese Bedingung ist nach der vorgenommenen Anpassung der Token-Logik i.d.R. nicht mehr notwendig
-                $tRes = $conn->query("SELECT public_token FROM projects WHERE id = $projectId");
-                $token = $tRes->fetch_assoc()['public_token'];
-                $link = BASE_URL . "index.php?module=client&page=view&token=" . $token;
-            }
-
-            $subject = "Projektplanung zur Prüfung: " . $proj['title'];
+            $link = BASE_URL . "index.php?module=client&page=view&token=" . $token;
+            $subject = "Projektplanung zur Prüfung: " . htmlspecialchars($proj['title']);
             $body = "
-                <h3>Hallo {$client['contact_person']},</h3>
-                <p>Eine neue Projektplanung <strong>{$proj['title']}</strong> liegt zur Prüfung bereit.</p>
+                <h3>Hallo " . htmlspecialchars($client['contact_person']) . ",</h3>
+                <p>Eine neue Projektplanung <strong>" . htmlspecialchars($proj['title']) . "</strong> liegt zur Prüfung bereit.</p>
                 <p>Bitte klicken Sie auf folgenden Link, um den Plan einzusehen und freizugeben:</p>
                 <p><a href='$link' style='background:#0d6efd;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;'>Planung öffnen</a></p>
                 <p>Oder Link kopieren: $link</p>
@@ -87,7 +85,6 @@ try {
             sendMail($client['email'], $subject, $body);
         }
     }
-    // END UPDATE
 
     // ITEMS INSERT
     $stmtItem = $conn->prepare("INSERT INTO project_items (project_id, position_order, title, description, hours_estimated) VALUES (?, ?, ?, ?, ?)");
